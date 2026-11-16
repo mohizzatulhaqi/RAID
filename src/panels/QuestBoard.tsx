@@ -1,25 +1,35 @@
 import React, { useState } from 'react';
-import { Quest, Task } from '../types';
-import { Swords, CheckCircle2, Play, Plus, Flame } from 'lucide-react';
+import { BossHp, Quest, Task } from '../types';
+import { statusFromTask } from '../state/status';
+import { StatusChip } from './StatusChip';
+import { BossBar } from './BossBar';
 
 interface QuestBoardProps {
   quests: Quest[];
   tasks: Task[];
   activeQuest: Quest | null;
+  bossHp: BossHp | null;
   onSelectQuest: (quest: Quest) => void;
+  canCreate: boolean;
   onCreateQuest: (title: string, description: string, priority: string, bossName: string) => void;
   onStartTask: (taskId: string) => void;
+  onCancelSession: (sessionId: string) => void;
+  onMarkVerified: (taskId: string) => void;
 }
 
 export const QuestBoard: React.FC<QuestBoardProps> = ({
   quests,
   tasks,
   activeQuest,
+  bossHp,
+  canCreate,
   onSelectQuest,
   onCreateQuest,
   onStartTask,
+  onCancelSession,
+  onMarkVerified,
 }) => {
-  const [showModal, setShowModal] = useState(false);
+  const [showDialog, setShowDialog] = useState(false);
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [bossName, setBossName] = useState('Build Failure Behemoth');
@@ -31,259 +41,122 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
     onCreateQuest(title, description, priority, bossName);
     setTitle('');
     setDescription('');
-    setShowModal(false);
+    setShowDialog(false);
   };
 
   return (
-    <div className="glass-panel" style={{ padding: '16px', display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Swords size={20} color="var(--gold-primary)" />
-          <h2 className="title-rpg" style={{ fontSize: '1.1rem' }}>Quest Board</h2>
-        </div>
-        <button className="btn-primary" onClick={() => setShowModal(true)}>
-          <Plus size={16} /> New Quest
-        </button>
-      </div>
-
-      {/* Active Boss HP Banner */}
+    <>
       {activeQuest && (
-        <div
-          style={{
-            background: 'linear-gradient(180deg, rgba(239, 68, 68, 0.12), rgba(0,0,0,0.4))',
-            border: '1px solid rgba(239, 68, 68, 0.35)',
-            borderRadius: '8px',
-            padding: '12px',
-            marginBottom: '14px',
-          }}
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Flame size={16} color="var(--ruby-hp)" />
-              <span style={{ fontWeight: 'bold', fontSize: '0.85rem', color: '#fca5a5' }}>
-                {activeQuest.boss_name}
-              </span>
-            </div>
-            <span style={{ fontSize: '0.8rem', color: '#fca5a5', fontWeight: 'bold' }}>
-              HP: {activeQuest.boss_current_hp} / {activeQuest.boss_max_hp}
-            </span>
-          </div>
-
-          <div className="hp-bar-container">
-            <div
-              className="hp-bar-fill"
-              style={{ width: `${Math.max(0, Math.min(100, activeQuest.boss_current_hp))}%` }}
-            />
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-            70% Milestones • 30% Build & Test Verification
-          </div>
-        </div>
+        <section aria-label="Boss encounter">
+          <BossBar name={activeQuest.boss_name ?? 'Unnamed boss'} hp={bossHp} />
+        </section>
       )}
 
-      {/* Quest Selection & Task List */}
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <section aria-labelledby="quests-title">
+        <div className="panel-head">
+          <h2 id="quests-title">Quests</h2>
+          <button className="btn btn-primary" disabled={!canCreate} onClick={() => setShowDialog(true)}>
+            Create quest
+          </button>
+        </div>
+
         {quests.length === 0 ? (
-          <div style={{ textAlign: 'center', color: 'var(--text-faint)', padding: '24px', fontSize: '0.85rem' }}>
-            No quests posted yet. Embark on a new quest above!
-          </div>
+          <p className="muted">{canCreate ? 'No quests yet. Create a quest to give an agent its first task.' : 'Open a project first, then create a quest.'}</p>
         ) : (
           quests.map((q) => {
-            const isSelected = activeQuest?.id === q.id;
+            const selected = activeQuest?.id === q.id;
             return (
-              <div
-                key={q.id}
-                onClick={() => onSelectQuest(q)}
-                style={{
-                  background: isSelected ? 'rgba(245, 158, 11, 0.1)' : 'rgba(255, 255, 255, 0.03)',
-                  border: isSelected ? '1px solid var(--gold-primary)' : '1px solid var(--border-subtle)',
-                  borderRadius: '8px',
-                  padding: '12px',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-                  <span style={{ fontWeight: '600', fontSize: '0.9rem', color: isSelected ? 'var(--gold-light)' : 'var(--text-main)' }}>
-                    {q.title}
-                  </span>
-                  <span className={`badge badge-${q.status === 'completed' ? 'emerald' : 'gold'}`}>
-                    {q.status}
-                  </span>
-                </div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
-                  {q.description}
-                </p>
-
-                {/* Subtasks */}
-                {isSelected && (
-                  <div style={{ marginTop: '10px', borderTop: '1px solid var(--border-subtle)', paddingTop: '8px' }}>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--gold-light)', marginBottom: '6px' }}>
-                      TASK OBJECTIVES:
-                    </div>
+              <div key={q.id}>
+                <button className="quest-item" aria-current={selected} onClick={() => onSelectQuest(q)}>
+                  <strong>{q.title}</strong>
+                  <p className="muted" style={{ maxWidth: '72ch' }}>
+                    {q.description}
+                  </p>
+                </button>
+                {selected && (
+                  <ul className="row-list" aria-label={`Tasks in ${q.title}`}>
                     {tasks.map((task) => (
-                      <div
-                        key={task.id}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          padding: '6px 8px',
-                          background: 'rgba(0, 0, 0, 0.25)',
-                          borderRadius: '6px',
-                          marginBottom: '4px',
-                        }}
-                      >
-                        <div>
-                          <div style={{ fontSize: '0.82rem', fontWeight: '500' }}>{task.title}</div>
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-faint)' }}>{task.description}</div>
-                        </div>
-
-                        {task.status === 'completed' ? (
-                          <CheckCircle2 size={16} color="var(--emerald-success)" />
-                        ) : task.status === 'running' ? (
-                          <span className="badge badge-ruby glow-pulse">RUNNING</span>
-                        ) : (
-                          <button
-                            className="btn-ghost"
-                            style={{ padding: '4px 8px', fontSize: '0.75rem' }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onStartTask(task.id);
-                            }}
-                          >
-                            <Play size={12} /> Launch
-                          </button>
+                      <li key={task.id}>
+                        <StatusChip status={statusFromTask(task.status)} />
+                        <span>{task.title}</span>
+                        <span className="task-actions">
+                          {task.allowed_actions.includes('start') && (
+                            <button className="btn" onClick={() => onStartTask(task.id)}>
+                              Start task
+                            </button>
+                          )}
+                          {task.allowed_actions.includes('retry') && (
+                            <button className="btn" onClick={() => onStartTask(task.id)}>
+                              Retry task
+                            </button>
+                          )}
+                          {task.allowed_actions.includes('cancel') && task.active_session_id && (
+                            <button className="btn" onClick={() => onCancelSession(task.active_session_id as string)}>
+                              Cancel session
+                            </button>
+                          )}
+                          {task.allowed_actions.includes('mark_verified') && (
+                            <button className="btn" onClick={() => onMarkVerified(task.id)}>
+                              Mark verified
+                            </button>
+                          )}
+                        </span>
+                        {task.failure_reason && <span className="sub">{task.failure_reason}</span>}
+                        {task.status === 'verification' && (
+                          <span className="sub">Finished, not verified. Run checks to confirm.</span>
                         )}
-                      </div>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 )}
               </div>
             );
           })
         )}
-      </div>
+      </section>
 
-      {/* Create Quest Modal */}
-      {showModal && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0, 0, 0, 0.75)',
-            backdropFilter: 'blur(8px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 100,
-          }}
-        >
-          <div className="glass-panel" style={{ width: '450px', padding: '24px', background: 'var(--bg-surface)' }}>
-            <h3 className="title-rpg" style={{ marginBottom: '16px', fontSize: '1.2rem' }}>Post New Quest</h3>
-            <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div>
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                  Quest Title
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="e.g. Implement JWT Authentication"
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    background: 'var(--bg-darker)',
-                    border: '1px solid var(--border-subtle)',
-                    color: '#fff',
-                    outline: 'none',
-                  }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                  Description / Task Objectives
-                </label>
-                <textarea
-                  required
-                  rows={3}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Describe the software engineering goal..."
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    background: 'var(--bg-darker)',
-                    border: '1px solid var(--border-subtle)',
-                    color: '#fff',
-                    outline: 'none',
-                  }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                  Boss Encounter Name
-                </label>
-                <input
-                  type="text"
-                  value={bossName}
-                  onChange={(e) => setBossName(e.target.value)}
-                  placeholder="e.g. Auth Hydra or Build Titan"
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    background: 'var(--bg-darker)',
-                    border: '1px solid var(--border-subtle)',
-                    color: '#fff',
-                    outline: 'none',
-                  }}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                  Quest Priority
-                </label>
-                <select
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                  style={{
-                    width: '100%',
-                    padding: '8px 12px',
-                    borderRadius: '6px',
-                    background: 'var(--bg-darker)',
-                    border: '1px solid var(--border-subtle)',
-                    color: '#fff',
-                    outline: 'none',
-                  }}
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                  <option value="urgent">Urgent</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '12px' }}>
-                <button type="button" className="btn-ghost" onClick={() => setShowModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn-primary">
-                  Summon Quest
-                </button>
-              </div>
-            </form>
-          </div>
+      {showDialog && (
+        <div className="dialog-backdrop">
+          <form className="dialog" role="dialog" aria-label="Create quest" onSubmit={handleSubmit}>
+            <h2>Create quest</h2>
+            <label className="field">
+              Title
+              <input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Implement JWT authentication" />
+            </label>
+            <label className="field">
+              Description
+              <textarea
+                required
+                rows={3}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="Describe the software goal"
+              />
+            </label>
+            <label className="field">
+              Boss name
+              <input value={bossName} onChange={(e) => setBossName(e.target.value)} />
+            </label>
+            <label className="field">
+              Priority
+              <select value={priority} onChange={(e) => setPriority(e.target.value)}>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="urgent">Urgent</option>
+              </select>
+            </label>
+            <div className="dialog-actions">
+              <button type="button" className="btn" onClick={() => setShowDialog(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary">
+                Create quest
+              </button>
+            </div>
+          </form>
         </div>
       )}
-    </div>
+    </>
   );
 };

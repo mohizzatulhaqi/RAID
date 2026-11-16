@@ -40,3 +40,20 @@ pub trait AgentProvider: Send + Sync {
     /// Aborts / cancels a running session
     async fn cancel(&self, session_id: &str) -> Result<(), ProviderError>;
 }
+
+/// How a provider session ended. Reported to the orchestrator, which owns all
+/// status changes (the provider never writes task or session status).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionOutcome {
+    /// The process exited normally. This is NOT task completion.
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionExit {
+    pub session_id: String,
+    pub task_id: String,
+    pub outcome: SessionOutcome,
+}

@@ -21,7 +21,7 @@ pub struct Quest {
     pub project_id: String,
     pub title: String,
     pub description: String,
-    pub status: String, // 'created', 'ready', 'active', 'completed', 'failed'
+    pub status: String,   // 'created', 'ready', 'active', 'completed', 'failed'
     pub priority: String, // 'low', 'medium', 'high', 'urgent'
     pub boss_name: Option<String>,
     pub boss_max_hp: i64,
@@ -106,8 +106,8 @@ pub struct VerificationRun {
 pub struct WorldState {
     pub project_id: String,
     pub scene_id: String,
-    pub camera_state: String, // JSON {"x":0,"y":0,"zoom":1.0}
+    pub camera_state: String,        // JSON {"x":0,"y":0,"zoom":1.0}
     pub character_positions: String, // JSON
-    pub visual_preferences: String, // JSON
+    pub visual_preferences: String,  // JSON
     pub updated_at: DateTime<Utc>,
 }

@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use thiserror::Error;
@@ -10,14 +11,202 @@ pub enum GitError {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Path is not valid UTF-8: {0}")]
+    InvalidPath(String),
+}
+
+/// What RAID found at a folder the user wants to open as a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RepoStatus {
+    Ready {
+        branch: String,
+    },
+    /// A git repository with no commit yet; worktrees are created from `HEAD`.
+    NoCommits,
+    NotARepo,
+    /// The folder is inside a repository but is not its root.
+    NotRepoRoot {
+        root: String,
+    },
+    Missing,
+}
+
+impl RepoStatus {
+    /// Plain explanation with the next step, or None when the repo is ready.
+    pub fn problem(&self) -> Option<String> {
+        match self {
+            RepoStatus::Ready { .. } => None,
+            RepoStatus::Missing => Some("This folder does not exist.".to_string()),
+            RepoStatus::NotARepo => Some(
+                "This folder is not a git repository. Quests run in git worktrees, so RAID needs one."
+                    .to_string(),
+            ),
+            RepoStatus::NoCommits => Some(
+                "This repository has no commits yet. Quests start from the latest commit, so make a first commit."
+                    .to_string(),
+            ),
+            RepoStatus::NotRepoRoot { root } => Some(format!(
+                "This folder is inside a repository. Open its root instead: {root}"
+            )),
+        }
+    }
+}
+
+const GITIGNORE_DEFAULT: &str = "node_modules/\ntarget/\ndist/\n.DS_Store\n";
+
+fn git_output(dir: &Path, args: &[&str]) -> Result<std::process::Output, GitError> {
+    Ok(Command::new("git").current_dir(dir).args(args).output()?)
+}
+
+fn git_ok(dir: &Path, args: &[&str]) -> Result<(), GitError> {
+    let out = git_output(dir, args)?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(GitError::CommandFailed(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
 }
 
 pub struct GitService;
 
 impl GitService {
+    pub fn inspect(path: &Path) -> Result<RepoStatus, GitError> {
+        if !path.is_dir() {
+            return Ok(RepoStatus::Missing);
+        }
+        let top = git_output(path, &["rev-parse", "--show-toplevel"])?;
+        if !top.status.success() {
+            return Ok(RepoStatus::NotARepo);
+        }
+        let root = String::from_utf8_lossy(&top.stdout).trim().to_string();
+        let same = match (Path::new(&root).canonicalize(), path.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if !same {
+            return Ok(RepoStatus::NotRepoRoot { root });
+        }
+        if !git_output(path, &["rev-parse", "--verify", "HEAD"])?
+            .status
+            .success()
+        {
+            return Ok(RepoStatus::NoCommits);
+        }
+        let branch = git_output(path, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        Ok(RepoStatus::Ready {
+            branch: String::from_utf8_lossy(&branch.stdout).trim().to_string(),
+        })
+    }
+
+    /// Keeps `.raid/` (worktrees) out of `git status` without touching any
+    /// tracked file: it goes in the local-only `info/exclude`.
+    pub fn exclude_raid_dir(repo: &Path) -> Result<(), GitError> {
+        let out = git_output(repo, &["rev-parse", "--git-path", "info/exclude"])?;
+        if !out.status.success() {
+            return Ok(());
+        }
+        let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let file = repo.join(rel);
+        let current = std::fs::read_to_string(&file).unwrap_or_default();
+        if current.lines().any(|l| l.trim() == ".raid/") {
+            return Ok(());
+        }
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut text = current;
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(".raid/\n");
+        std::fs::write(&file, text)?;
+        Ok(())
+    }
+
+    /// Makes the folder ready for quests: `git init` when needed, a default
+    /// `.gitignore` only if none exists, and a first commit of the folder's
+    /// files. The caller must have the user's explicit consent.
+    pub fn initialize(path: &Path) -> Result<RepoStatus, GitError> {
+        match Self::inspect(path)? {
+            RepoStatus::NotARepo => {
+                git_ok(path, &["init", "-b", "main"]).or_else(|_| git_ok(path, &["init"]))?
+            }
+            RepoStatus::NoCommits => {}
+            RepoStatus::Ready { branch } => return Ok(RepoStatus::Ready { branch }),
+            other => {
+                return Err(GitError::CommandFailed(
+                    other
+                        .problem()
+                        .unwrap_or_else(|| "Cannot initialize here".to_string()),
+                ));
+            }
+        }
+
+        let ignore = path.join(".gitignore");
+        if !ignore.exists() {
+            std::fs::write(&ignore, GITIGNORE_DEFAULT)?;
+        }
+        Self::exclude_raid_dir(path)?;
+        git_ok(path, &["add", "-A"])?;
+
+        // Use the user's git identity; fall back only when none is configured.
+        let has_identity = |key: &str| {
+            git_output(path, &["config", key])
+                .map(|o| o.status.success() && !o.stdout.is_empty())
+                .unwrap_or(false)
+        };
+        let mut args: Vec<&str> = Vec::new();
+        if !has_identity("user.name") {
+            args.extend(["-c", "user.name=RAID"]);
+        }
+        if !has_identity("user.email") {
+            args.extend(["-c", "user.email=raid@localhost"]);
+        }
+        args.extend([
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initial commit (created by RAID)",
+        ]);
+        git_ok(path, &args)?;
+
+        Self::inspect(path)
+    }
+
+    /// True if the worktree has uncommitted changes. If git cannot tell, this
+    /// returns true so that work is reviewed rather than silently discarded.
+    pub fn has_changes(worktree: &Path) -> bool {
+        if !worktree.is_dir() {
+            return false;
+        }
+        match Command::new("git")
+            .current_dir(worktree)
+            .args(["status", "--porcelain"])
+            .output()
+        {
+            Ok(out) if out.status.success() => !out.stdout.is_empty(),
+            _ => true,
+        }
+    }
+
+    /// Location of the quest worktree (it may not exist yet).
+    pub fn quest_worktree_path(repo_path: &Path, quest_id: &str) -> PathBuf {
+        repo_path
+            .join(".raid")
+            .join("worktrees")
+            .join(format!("quest_{}", quest_id))
+    }
+
     /// Creates an isolated Git worktree at `.raid/worktrees/quest_<quest_id>` on branch `raid/quest-<quest_id>`
     pub fn create_quest_worktree(repo_path: &Path, quest_id: &str) -> Result<PathBuf, GitError> {
-        let worktree_dir = repo_path.join(".raid").join("worktrees").join(format!("quest_{}", quest_id));
+        let worktree_dir = repo_path
+            .join(".raid")
+            .join("worktrees")
+            .join(format!("quest_{}", quest_id));
         let branch_name = format!("raid/quest-{}", quest_id);
 
         if worktree_dir.exists() {
@@ -29,10 +218,16 @@ impl GitService {
             std::fs::create_dir_all(parent)?;
         }
 
-        info!("Creating git worktree at {:?} on branch {}", worktree_dir, branch_name);
+        info!(
+            "Creating git worktree at {:?} on branch {}",
+            worktree_dir, branch_name
+        );
+        let worktree_str = worktree_dir
+            .to_str()
+            .ok_or_else(|| GitError::InvalidPath(worktree_dir.display().to_string()))?;
         let output = Command::new("git")
             .current_dir(repo_path)
-            .args(["worktree", "add", "-b", &branch_name, worktree_dir.to_str().unwrap(), "HEAD"])
+            .args(["worktree", "add", "-b", &branch_name, worktree_str, "HEAD"])
             .output()?;
 
         if !output.status.success() {
@@ -41,10 +236,12 @@ impl GitService {
             if stderr.contains("already exists") {
                 let fallback = Command::new("git")
                     .current_dir(repo_path)
-                    .args(["worktree", "add", worktree_dir.to_str().unwrap(), &branch_name])
+                    .args(["worktree", "add", worktree_str, &branch_name])
                     .output()?;
                 if !fallback.status.success() {
-                    return Err(GitError::CommandFailed(String::from_utf8_lossy(&fallback.stderr).to_string()));
+                    return Err(GitError::CommandFailed(
+                        String::from_utf8_lossy(&fallback.stderr).to_string(),
+                    ));
                 }
             } else {
                 return Err(GitError::CommandFailed(stderr.to_string()));
@@ -56,19 +253,28 @@ impl GitService {
 
     /// Removes a git worktree safely
     pub fn remove_quest_worktree(repo_path: &Path, quest_id: &str) -> Result<(), GitError> {
-        let worktree_dir = repo_path.join(".raid").join("worktrees").join(format!("quest_{}", quest_id));
+        let worktree_dir = repo_path
+            .join(".raid")
+            .join("worktrees")
+            .join(format!("quest_{}", quest_id));
         if !worktree_dir.exists() {
             return Ok(());
         }
 
         info!("Removing git worktree at {:?}", worktree_dir);
+        let worktree_str = worktree_dir
+            .to_str()
+            .ok_or_else(|| GitError::InvalidPath(worktree_dir.display().to_string()))?;
         let output = Command::new("git")
             .current_dir(repo_path)
-            .args(["worktree", "remove", "--force", worktree_dir.to_str().unwrap()])
+            .args(["worktree", "remove", "--force", worktree_str])
             .output()?;
 
         if !output.status.success() {
-            warn!("Failed to remove git worktree via command: {}", String::from_utf8_lossy(&output.stderr));
+            warn!(
+                "Failed to remove git worktree via command: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             // Fallback manual cleanup
             let _ = std::fs::remove_dir_all(&worktree_dir);
         }
@@ -85,9 +291,105 @@ impl GitService {
             .output()?;
 
         if !output.status.success() {
-            return Err(GitError::CommandFailed(String::from_utf8_lossy(&output.stderr).to_string()));
+            return Err(GitError::CommandFailed(
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ));
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("raid-repo-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn git_available() -> bool {
+        Command::new("git").arg("--version").output().is_ok()
+    }
+
+    #[test]
+    fn missing_and_plain_folders_are_reported() {
+        if !git_available() {
+            return;
+        }
+        assert_eq!(
+            GitService::inspect(Path::new("/no/such/folder")).ok(),
+            Some(RepoStatus::Missing)
+        );
+        let dir = temp_dir();
+        assert_eq!(GitService::inspect(&dir).ok(), Some(RepoStatus::NotARepo));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn initialize_makes_a_plain_folder_ready_without_overwriting_gitignore() {
+        if !git_available() {
+            return;
+        }
+        let dir = temp_dir();
+        std::fs::write(dir.join("a.txt"), "hello").expect("write");
+        std::fs::write(dir.join(".gitignore"), "secret.txt\n").expect("ignore");
+        std::fs::write(dir.join("secret.txt"), "x").expect("secret");
+
+        let status = GitService::initialize(&dir).expect("initialize");
+        assert!(matches!(status, RepoStatus::Ready { .. }), "{status:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".gitignore")).unwrap_or_default(),
+            "secret.txt\n"
+        );
+        let tracked = git_output(&dir, &["ls-files"]).expect("ls-files");
+        let tracked = String::from_utf8_lossy(&tracked.stdout).to_string();
+        assert!(tracked.contains("a.txt"));
+        assert!(!tracked.contains("secret.txt"));
+
+        // Idempotent on a ready repo.
+        assert!(matches!(
+            GitService::initialize(&dir),
+            Ok(RepoStatus::Ready { .. })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn repo_without_commits_and_subfolders_are_detected() {
+        if !git_available() {
+            return;
+        }
+        let dir = temp_dir();
+        git_ok(&dir, &["init"]).expect("init");
+        assert_eq!(GitService::inspect(&dir).ok(), Some(RepoStatus::NoCommits));
+
+        std::fs::create_dir_all(dir.join("sub")).expect("sub");
+        assert!(matches!(
+            GitService::inspect(&dir.join("sub")),
+            Ok(RepoStatus::NotRepoRoot { .. })
+        ));
+        assert!(matches!(
+            GitService::initialize(&dir.join("sub")),
+            Err(GitError::CommandFailed(_))
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn raid_dir_is_excluded_once() {
+        if !git_available() {
+            return;
+        }
+        let dir = temp_dir();
+        git_ok(&dir, &["init"]).expect("init");
+        GitService::exclude_raid_dir(&dir).expect("first");
+        GitService::exclude_raid_dir(&dir).expect("second");
+        let text = std::fs::read_to_string(dir.join(".git/info/exclude")).unwrap_or_default();
+        assert_eq!(text.matches(".raid/").count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -45,6 +45,10 @@ pub enum EventPayload {
         action_description: String,
         is_risky: bool,
     },
+    /// The user's answer to an approval request, as relayed to the agent.
+    ApprovalAnswered {
+        approved: bool,
+    },
     VerificationStarted {
         verification_type: String,
         command: String,

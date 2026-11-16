@@ -44,13 +44,19 @@ export interface Task {
   parent_task_id?: string;
   title: string;
   description: string;
-  status: 'created' | 'ready' | 'assigned' | 'running' | 'verification' | 'completed' | 'blocked' | 'awaiting_approval' | 'failed' | 'cancelled';
+  status: 'created' | 'ready' | 'assigned' | 'running' | 'verification' | 'completed' | 'blocked' | 'awaiting_approval' | 'failed' | 'cancelled' | 'needs_review';
   assigned_character_id?: string;
   priority: 'low' | 'medium' | 'high' | 'urgent';
   weight_percent: number;
   created_at: string;
   updated_at: string;
+  failure_reason: string | null;
+  active_session_id: string | null;
+  /** What the backend allows for this task right now. */
+  allowed_actions: TaskAction[];
 }
+
+export type TaskAction = 'start' | 'retry' | 'cancel' | 'run_checks' | 'mark_verified';
 
 export interface Character {
   id: string;
@@ -64,12 +70,90 @@ export interface Character {
   created_at: string;
 }
 
+/** Mirrors the Rust `EventPayload` enum (`events/mod.rs`). */
+export type EventPayload =
+  | { type: 'session_started'; data: { session_id: string; task_id: string } }
+  | { type: 'session_output'; data: { text: string } }
+  | { type: 'file_read'; data: { path: string } }
+  | { type: 'file_changed'; data: { path: string } }
+  | { type: 'command_started'; data: { command: string } }
+  | { type: 'command_completed'; data: { command: string; exit_code: number } }
+  | { type: 'approval_required'; data: { action_description: string; is_risky: boolean } }
+  | { type: 'approval_answered'; data: { approved: boolean } }
+  | { type: 'verification_started'; data: { verification_type: string; command: string } }
+  | {
+      type: 'verification_completed';
+      data: { verification_type: string; success: boolean; exit_code: number; summary: string };
+    }
+  | { type: 'session_succeeded'; data: { summary: string } }
+  | { type: 'session_failed'; data: { error: string } }
+  | { type: 'session_cancelled' };
+
 export interface NormalizedEvent {
   session_id: string;
   timestamp: string;
   presentation_state: PresentationState;
-  payload: {
-    type: string;
-    data?: any;
-  };
+  payload: EventPayload;
+}
+
+/** Status kinds of the shared status chip (DESIGN §6.1). */
+export type StatusKind =
+  | 'idle'
+  | 'assigned'
+  | 'preparing'
+  | 'running'
+  | 'waiting'
+  | 'needs_approval'
+  | 'verifying'
+  | 'finished_unverified'
+  | 'verified'
+  | 'needs_review'
+  | 'failed'
+  | 'cancelled';
+
+export type CheckState = 'passed' | 'failed' | 'not_run' | 'not_set';
+
+/** Mirrors the Rust `BossHp` struct. All values are computed by the backend. */
+export interface BossHp {
+  remaining_bp: number;
+  milestone_bp: number;
+  verification_bp: number;
+  defeated: boolean;
+  milestones_done: number;
+  milestones_total: number;
+  milestones: { weight_bp: number; proven: boolean }[];
+  build: { weight_bp: number; state: CheckState };
+  test: { weight_bp: number; state: CheckState };
+  lint: { weight_bp: number; state: CheckState };
+  label: string;
+  next_step: string;
+}
+
+export interface CheckReport {
+  verification_type: 'build' | 'test' | 'lint';
+  command: string;
+  passed: boolean;
+  exit_code: number | null;
+  summary: string;
+}
+
+/** Result of checking a folder before opening it (mirrors Rust `RepoReport`). */
+export type RepoReport = (
+  | { kind: 'ready'; branch: string }
+  | { kind: 'no_commits' }
+  | { kind: 'not_a_repo' }
+  | { kind: 'not_repo_root'; root: string }
+  | { kind: 'missing' }
+) & { problem: string | null };
+
+export interface RepoIssue {
+  path: string;
+  report: RepoReport;
+}
+
+export interface DetectedChecks {
+  build_cmd: string | null;
+  test_cmd: string | null;
+  lint_cmd: string | null;
+  sources: string[];
 }
