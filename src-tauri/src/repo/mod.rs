@@ -71,6 +71,35 @@ fn git_ok(dir: &Path, args: &[&str]) -> Result<(), GitError> {
     }
 }
 
+const MAX_PATCH_BYTES: usize = 1024 * 1024;
+const MAX_UNTRACKED_FILES: usize = 500;
+const MAX_UNTRACKED_BYTES: u64 = 200 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileChange {
+    pub path: String,
+    pub status: ChangeKind,
+    /// None for binary files or files too large to diff.
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorktreeChanges {
+    pub files: Vec<FileChange>,
+    pub patch: String,
+    pub truncated: bool,
+}
+
 pub struct GitService;
 
 impl GitService {
@@ -282,21 +311,101 @@ impl GitService {
         Ok(())
     }
 
-    /// Gets diff of changes in the quest branch compared to current main/HEAD
-    pub fn get_quest_diff(repo_path: &Path, quest_id: &str) -> Result<String, GitError> {
-        let branch_name = format!("raid/quest-{}", quest_id);
-        let output = Command::new("git")
-            .current_dir(repo_path)
-            .args(["diff", "HEAD", &branch_name])
-            .output()?;
+    /// Everything the agent changed in a quest worktree since it branched off
+    /// `base_branch`: commits on the quest branch, uncommitted edits and new files.
+    pub fn worktree_changes(
+        worktree: &Path,
+        base_branch: &str,
+    ) -> Result<WorktreeChanges, GitError> {
+        let base = git_output(worktree, &["merge-base", "HEAD", base_branch])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|| "HEAD".to_string());
 
-        if !output.status.success() {
-            return Err(GitError::CommandFailed(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            ));
+        let mut files: Vec<FileChange> = Vec::new();
+        let name_status = git_output(worktree, &["diff", "--name-status", "-M", &base])?;
+        let numstat = git_output(worktree, &["diff", "--numstat", "-M", &base])?;
+        let counts: Vec<(Option<u32>, Option<u32>)> = String::from_utf8_lossy(&numstat.stdout)
+            .lines()
+            .map(|l| {
+                let mut parts = l.split('\t');
+                (
+                    parts.next().and_then(|n| n.parse().ok()),
+                    parts.next().and_then(|n| n.parse().ok()),
+                )
+            })
+            .collect();
+        for (i, line) in String::from_utf8_lossy(&name_status.stdout)
+            .lines()
+            .enumerate()
+        {
+            let mut parts = line.split('\t');
+            let code = parts.next().unwrap_or("");
+            let path = parts.next_back().unwrap_or("").to_string();
+            let status = match code.chars().next() {
+                Some('A') => ChangeKind::Added,
+                Some('D') => ChangeKind::Deleted,
+                Some('R') => ChangeKind::Renamed,
+                _ => ChangeKind::Modified,
+            };
+            let (additions, deletions) = counts.get(i).copied().unwrap_or((None, None));
+            files.push(FileChange {
+                path,
+                status,
+                additions,
+                deletions,
+            });
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let mut patch =
+            String::from_utf8_lossy(&git_output(worktree, &["diff", "-M", &base])?.stdout)
+                .to_string();
+
+        let untracked = git_output(worktree, &["ls-files", "--others", "--exclude-standard"])?;
+        let untracked: Vec<String> = String::from_utf8_lossy(&untracked.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let untracked_total = untracked.len();
+        for path in untracked.into_iter().take(MAX_UNTRACKED_FILES) {
+            let size = std::fs::metadata(worktree.join(&path))
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let mut additions = None;
+            if size <= MAX_UNTRACKED_BYTES && patch.len() < MAX_PATCH_BYTES {
+                // Exit code 1 only means "files differ".
+                let out = git_output(worktree, &["diff", "--no-index", "--", "/dev/null", &path])?;
+                let text = String::from_utf8_lossy(&out.stdout).to_string();
+                additions = Some(
+                    text.lines()
+                        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+                        .count() as u32,
+                );
+                patch.push_str(&text);
+            }
+            files.push(FileChange {
+                path,
+                status: ChangeKind::Added,
+                additions,
+                deletions: Some(0),
+            });
+        }
+
+        let truncated = patch.len() > MAX_PATCH_BYTES || untracked_total > MAX_UNTRACKED_FILES;
+        if patch.len() > MAX_PATCH_BYTES {
+            let mut cut = MAX_PATCH_BYTES;
+            while !patch.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            patch.truncate(cut);
+        }
+
+        Ok(WorktreeChanges {
+            files,
+            patch,
+            truncated,
+        })
     }
 }
 
@@ -376,6 +485,66 @@ mod tests {
             GitService::initialize(&dir.join("sub")),
             Err(GitError::CommandFailed(_))
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worktree_changes_include_commits_edits_and_new_files() {
+        if !git_available() {
+            return;
+        }
+        let dir = temp_dir();
+        std::fs::write(dir.join("keep.txt"), "one\n").expect("write");
+        std::fs::write(dir.join("gone.txt"), "bye\n").expect("write");
+        GitService::initialize(&dir).expect("init");
+        let base = String::from_utf8_lossy(
+            &git_output(&dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .expect("branch")
+                .stdout,
+        )
+        .trim()
+        .to_string();
+
+        let wt = GitService::create_quest_worktree(&dir, "q1").expect("worktree");
+        std::fs::write(wt.join("committed.txt"), "c\n").expect("write");
+        git_ok(&wt, &["add", "committed.txt"]).expect("add");
+        git_ok(
+            &wt,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-m",
+                "agent commit",
+            ],
+        )
+        .expect("commit");
+        std::fs::write(wt.join("keep.txt"), "one\ntwo\n").expect("edit");
+        std::fs::remove_file(wt.join("gone.txt")).expect("delete");
+        std::fs::write(wt.join("new file.txt"), "a\nb\n").expect("new");
+
+        let changes = GitService::worktree_changes(&wt, &base).expect("changes");
+        let find = |p: &str| changes.files.iter().find(|f| f.path == p).cloned();
+        assert_eq!(
+            find("committed.txt").map(|f| f.status),
+            Some(ChangeKind::Added)
+        );
+        let keep = find("keep.txt").expect("keep");
+        assert_eq!(
+            (keep.status, keep.additions),
+            (ChangeKind::Modified, Some(1))
+        );
+        assert_eq!(
+            find("gone.txt").map(|f| f.status),
+            Some(ChangeKind::Deleted)
+        );
+        let new = find("new file.txt").expect("untracked");
+        assert_eq!((new.status, new.additions), (ChangeKind::Added, Some(2)));
+        assert!(changes.patch.contains("+two"));
+        assert!(changes.patch.contains("new file.txt"));
+        assert!(!changes.truncated);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

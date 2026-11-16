@@ -157,3 +157,46 @@ export interface DetectedChecks {
   lint_cmd: string | null;
   sources: string[];
 }
+
+export interface FileChange {
+  path: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface WorktreeChanges {
+  files: FileChange[];
+  patch: string;
+  truncated: boolean;
+}
+
+export interface TaskDetail {
+  transitions: {
+    from_status: string;
+    to_status: string;
+    reason: string | null;
+    actor: string;
+    created_at: string;
+  }[];
+  sessions: {
+    id: string;
+    provider: string;
+    status: string;
+    worktree_path: string | null;
+    branch_name: string | null;
+    started_at: string;
+    ended_at: string | null;
+    exit_code: number | null;
+  }[];
+  runs: {
+    id: string;
+    verification_type: string;
+    command: string;
+    status: string;
+    exit_code: number | null;
+    result_summary: string | null;
+    started_at: string;
+    ended_at: string | null;
+  }[];
+}

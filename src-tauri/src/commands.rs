@@ -5,7 +5,7 @@ use crate::orchestrator::state::{
 };
 use crate::persistence::models::{Character, Project, Quest, Task};
 use crate::providers::{AgentProvider, ClaudeCodeAdapter, SessionConfig};
-use crate::repo::{GitService, RepoStatus};
+use crate::repo::{GitService, RepoStatus, WorktreeChanges};
 use crate::verification;
 use chrono::Utc;
 use serde::Serialize;
@@ -407,20 +407,107 @@ pub async fn cancel_agent_session(
         .map_err(|e| e.to_string())
 }
 
+/// Files the agent changed in the quest worktree, with the full patch.
 #[tauri::command]
-pub async fn get_quest_diff(
-    project_id: String,
+pub async fn get_quest_changes(
     quest_id: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
-    let project: Project = sqlx::query_as("SELECT * FROM projects WHERE id = $1")
-        .bind(&project_id)
-        .fetch_one(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<Option<WorktreeChanges>, String> {
+    let project: Project = sqlx::query_as(
+        "SELECT p.* FROM projects p JOIN quests q ON q.project_id = p.id WHERE q.id = $1",
+    )
+    .bind(&quest_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|e| format!("Quest not found: {e}"))?;
 
-    GitService::get_quest_diff(Path::new(&project.repository_path), &quest_id)
-        .map_err(|e| e.to_string())
+    let worktree = GitService::quest_worktree_path(Path::new(&project.repository_path), &quest_id);
+    if !worktree.is_dir() {
+        return Ok(None);
+    }
+    let base = project.default_branch;
+    tokio::task::spawn_blocking(move || GitService::worktree_changes(&worktree, &base))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(Some)
+        .map_err(|e| format!("Could not read the changes: {e}"))
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct TransitionRow {
+    pub from_status: String,
+    pub to_status: String,
+    pub reason: Option<String>,
+    pub actor: String,
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct SessionRow {
+    pub id: String,
+    pub provider: String,
+    pub status: String,
+    pub worktree_path: Option<String>,
+    pub branch_name: Option<String>,
+    pub started_at: chrono::DateTime<Utc>,
+    pub ended_at: Option<chrono::DateTime<Utc>>,
+    pub exit_code: Option<i64>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct RunRow {
+    pub id: String,
+    pub verification_type: String,
+    pub command: String,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub result_summary: Option<String>,
+    pub started_at: chrono::DateTime<Utc>,
+    pub ended_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
+pub struct TaskDetail {
+    pub transitions: Vec<TransitionRow>,
+    pub sessions: Vec<SessionRow>,
+    pub runs: Vec<RunRow>,
+}
+
+/// History of one task: status changes, agent sessions and check runs, newest first.
+#[tauri::command]
+pub async fn get_task_detail(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskDetail, String> {
+    let transitions = sqlx::query_as(
+        "SELECT from_status, to_status, reason, actor, created_at FROM task_transitions
+         WHERE task_id = $1 ORDER BY created_at DESC, rowid DESC LIMIT 200",
+    )
+    .bind(&task_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let sessions = sqlx::query_as(
+        "SELECT id, provider, status, worktree_path, branch_name, started_at, ended_at, exit_code
+         FROM agent_sessions WHERE task_id = $1 ORDER BY started_at DESC, rowid DESC LIMIT 50",
+    )
+    .bind(&task_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let runs = sqlx::query_as(
+        "SELECT id, verification_type, command, status, exit_code, result_summary, started_at, ended_at
+         FROM verification_runs WHERE task_id = $1 ORDER BY started_at DESC, rowid DESC LIMIT 60",
+    )
+    .bind(&task_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(TaskDetail {
+        transitions,
+        sessions,
+        runs,
+    })
 }
 
 /// Boss HP is computed here from tasks and verification runs; the frontend

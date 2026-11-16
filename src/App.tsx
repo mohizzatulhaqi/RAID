@@ -7,6 +7,7 @@ import { QuestBoard } from './panels/QuestBoard';
 import { PartyPanel } from './panels/PartyPanel';
 import { ActivityLog } from './panels/ActivityLog';
 import { ChecksPanel } from './panels/ChecksPanel';
+import { TaskDetailPanel } from './panels/TaskDetailPanel';
 import { RepoIssuePanel } from './panels/RepoIssuePanel';
 import { ApprovalBanner } from './panels/ApprovalBanner';
 import { StatusChip } from './panels/StatusChip';
@@ -109,7 +110,18 @@ export function App() {
           onStartTask={raid.startTask}
           onCancelSession={raid.cancelSession}
           onMarkVerified={raid.markVerified}
+          selectedTaskId={raid.selectedTask?.id ?? null}
+          onSelectTask={raid.selectTask}
         />
+        {raid.selectedTask && (
+          <TaskDetailPanel
+            key={raid.selectedTask.id}
+            task={raid.selectedTask}
+            detail={raid.taskDetail}
+            changes={raid.changes}
+            onLoadChanges={raid.loadChanges}
+          />
+        )}
         {raid.project && (
           <ChecksPanel
             key={`${raid.project.id}:${raid.project.updated_at}`}

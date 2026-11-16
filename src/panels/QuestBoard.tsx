@@ -15,6 +15,8 @@ interface QuestBoardProps {
   onStartTask: (taskId: string) => void;
   onCancelSession: (sessionId: string) => void;
   onMarkVerified: (taskId: string) => void;
+  selectedTaskId: string | null;
+  onSelectTask: (taskId: string) => void;
 }
 
 export const QuestBoard: React.FC<QuestBoardProps> = ({
@@ -28,6 +30,8 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
   onStartTask,
   onCancelSession,
   onMarkVerified,
+  selectedTaskId,
+  onSelectTask,
 }) => {
   const [showDialog, setShowDialog] = useState(false);
   const [title, setTitle] = useState('');
@@ -78,7 +82,13 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
                     {tasks.map((task) => (
                       <li key={task.id}>
                         <StatusChip status={statusFromTask(task.status)} />
-                        <span>{task.title}</span>
+                        <button
+                          className="quest-item"
+                          aria-current={selectedTaskId === task.id}
+                          onClick={() => onSelectTask(task.id)}
+                        >
+                          {task.title}
+                        </button>
                         <span className="task-actions">
                           {task.allowed_actions.includes('start') && (
                             <button className="btn" onClick={() => onStartTask(task.id)}>

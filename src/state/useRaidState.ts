@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
-import { BossHp, CheckReport, DetectedChecks, RepoIssue, RepoReport, Character, NormalizedEvent, PresentationState, Project, Quest, Task } from '../types';
+import { BossHp, CheckReport, DetectedChecks, TaskDetail, WorktreeChanges, RepoIssue, RepoReport, Character, NormalizedEvent, PresentationState, Project, Quest, Task } from '../types';
 
 const MAX_EVENTS = 1000; // ring buffer: bounded memory for long sessions
 
@@ -61,6 +61,9 @@ export function useRaidState() {
   const [repoIssue, setRepoIssue] = useState<RepoIssue | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [pickedTaskId, setPickedTaskId] = useState<string | null>(null);
+  const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null);
+  const [changes, setChanges] = useState<{ questId: string; data: WorktreeChanges | null } | null>(null);
   const [autoRun, setAutoRun] = useState<boolean>(readAutoRun);
 
   const activeQuestId = activeQuest?.id ?? null;
@@ -200,6 +203,26 @@ export function useRaidState() {
     };
   }, [activeQuestId, refreshQuest]);
 
+  const selectedTask = tasks.find((t) => t.id === pickedTaskId) ?? tasks[0] ?? null;
+  const selectedTaskId = selectedTask?.id ?? null;
+  const selectedStamp = selectedTask ? `${selectedTask.id}:${selectedTask.updated_at}` : null;
+
+  // Reload the history whenever the selected task changes state.
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    let stale = false;
+    invoke<TaskDetail>('get_task_detail', { taskId: selectedTaskId })
+      .then((d) => {
+        if (!stale) setTaskDetail(d);
+      })
+      .catch((err) => {
+        if (!stale) setNotice(`Could not load the task history: ${errorText(err)}`);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [selectedTaskId, selectedStamp]);
+
   // The backend announces every task/session status change after committing it.
   useEffect(() => {
     if (!activeQuestId) return;
@@ -334,6 +357,17 @@ export function useRaidState() {
     }
   };
 
+  const loadChanges = async () => {
+    if (!activeQuestId) return;
+    const questId = activeQuestId;
+    try {
+      const data = await invoke<WorktreeChanges | null>('get_quest_changes', { questId });
+      setChanges({ questId, data });
+    } catch (err) {
+      setNotice(errorText(err));
+    }
+  };
+
   const cancelSession = async (sessionId: string) => {
     try {
       await invoke('cancel_agent_session', { sessionId });
@@ -363,6 +397,11 @@ export function useRaidState() {
   };
 
   return {
+    selectedTask,
+    selectTask: setPickedTaskId,
+    taskDetail: selectedTaskId ? taskDetail : null,
+    changes: changes && changes.questId === activeQuestId ? changes.data : undefined,
+    loadChanges,
     project,
     quests,
     activeQuest,
