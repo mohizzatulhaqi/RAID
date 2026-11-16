@@ -65,7 +65,12 @@ pub fn run() {
                 loop {
                     match event_rx.recv().await {
                         Ok(event) => {
+                            // Single point where agent output is redacted, then shown and kept.
+                            let event = events::redact::redact_event(event);
                             let _ = handle.emit("agent-event", &event);
+                            if let Err(e) = events::store::save_event(&event_pool, &event).await {
+                                tracing::warn!("Could not save an agent event: {e}");
+                            }
                             if matches!(
                                 event.payload,
                                 events::EventPayload::ApprovalRequired { .. }
@@ -139,6 +144,7 @@ pub fn run() {
             commands::cancel_agent_session,
             commands::get_quest_changes,
             commands::get_task_detail,
+            commands::get_recent_events,
             commands::get_boss_hp,
             commands::set_project_checks,
             commands::run_checks,

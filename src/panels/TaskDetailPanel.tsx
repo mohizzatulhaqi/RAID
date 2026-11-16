@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Task, TaskDetail, WorktreeChanges } from '../types';
-import { statusFromTask } from '../state/status';
+import { statusFromPresentation, statusFromTask } from '../state/status';
+import { describeEvent } from '../state/eventText';
 import { StatusChip } from './StatusChip';
 
 type Tab = 'summary' | 'changes' | 'checks' | 'history';
@@ -208,6 +209,24 @@ export const TaskDetailPanel: React.FC<TaskDetailPanelProps> = ({ task, detail, 
                 </li>
               ))}
             </ol>
+          )}
+          {detail && detail.events.length > 0 && (
+            <>
+              <h3 className="history-head">Activity</h3>
+              <ol className="history" aria-label="Agent activity">
+                {detail.events.map((ev, i) => (
+                  <li key={i}>
+                    <span className="row-inline">
+                      <time className="num muted">{time(ev.timestamp)}</time>
+                      <StatusChip status={statusFromPresentation(ev.presentation_state)} />
+                    </span>
+                    <span className="mono" style={{ wordBreak: 'break-word' }}>
+                      {describeEvent(ev)}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </>
           )}
           {detail && detail.sessions.length > 0 && (
             <>

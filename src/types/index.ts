@@ -172,6 +172,7 @@ export interface WorktreeChanges {
 }
 
 export interface TaskDetail {
+  events: NormalizedEvent[];
   transitions: {
     from_status: string;
     to_status: string;

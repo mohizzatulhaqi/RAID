@@ -124,6 +124,7 @@ export function useRaidState() {
         }
       }
       setProject(proj);
+      setEvents(await invoke<NormalizedEvent[]>('get_recent_events', { projectId: proj.id }));
       setCharacters(await invoke<Character[]>('get_characters'));
       const qs = await invoke<Quest[]>('get_quests', { projectId: proj.id });
       setQuests(qs);

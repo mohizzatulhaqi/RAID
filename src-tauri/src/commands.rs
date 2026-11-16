@@ -468,6 +468,7 @@ pub struct RunRow {
 
 #[derive(Serialize)]
 pub struct TaskDetail {
+    pub events: Vec<crate::events::NormalizedEvent>,
     pub transitions: Vec<TransitionRow>,
     pub sessions: Vec<SessionRow>,
     pub runs: Vec<RunRow>,
@@ -503,7 +504,11 @@ pub async fn get_task_detail(
     .fetch_all(&state.db)
     .await
     .map_err(|e| e.to_string())?;
+    let events = crate::events::store::task_events(&state.db, &task_id, 300)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(TaskDetail {
+        events,
         transitions,
         sessions,
         runs,
@@ -777,6 +782,17 @@ pub async fn detect_checks(
         None => repo,
     };
     tokio::task::spawn_blocking(move || verification::detect_checks(&dir))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Recent activity of a project, oldest first, so the log survives a restart.
+#[tauri::command]
+pub async fn get_recent_events(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::events::NormalizedEvent>, String> {
+    crate::events::store::project_events(&state.db, &project_id, 500)
         .await
         .map_err(|e| e.to_string())
 }
