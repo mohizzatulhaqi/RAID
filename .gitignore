@@ -24,3 +24,8 @@ dist-ssr
 *.sw?
 
 docs/
+.vscode/
+
+CLAUDE.md
+DESIGN.md
+.claude/
