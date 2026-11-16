@@ -201,6 +201,10 @@ pub enum TransitionError {
     DependenciesIncomplete,
     #[error("Another session is already running (limit {0})")]
     ConcurrencyLimit(i64),
+    #[error("This party member is already on another task")]
+    CharacterBusy,
+    #[error("Party member not found")]
+    CharacterNotFound,
     #[error("This dependency would create a cycle")]
     DependencyCycle,
     #[error("Database error: {0}")]

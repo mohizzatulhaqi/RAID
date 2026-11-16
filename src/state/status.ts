@@ -1,4 +1,4 @@
-import { PresentationState, StatusKind, Task } from '../types';
+import { Character, PresentationState, StatusKind, Task } from '../types';
 
 /** Presentation state (from normalized events) -> status chip. */
 export function statusFromPresentation(state: PresentationState | string): StatusKind {
@@ -63,4 +63,21 @@ export function statusFromTask(status: Task['status']): StatusKind {
 export function formatHp(bp: number): string {
   const pct = bp / 100;
   return `${Number.isInteger(pct) ? pct : pct.toFixed(2).replace(/0+$/, '')}%`;
+}
+
+const SCENE_LABEL: Record<string, string> = {
+  entering: 'Entering',
+  exploring: 'Exploring',
+  planning: 'Planning',
+  fighting: 'Fighting',
+  investigating: 'Investigating',
+  needs_approval: 'Needs approval',
+  verification: 'Returning',
+  returning: 'Returning',
+};
+
+/** World label for a character: the latest real event while a session is live. */
+export function sceneLabel(char: Character): string | null {
+  if (!char.active_session_id || !char.last_event) return null;
+  return SCENE_LABEL[char.last_event.presentation_state] ?? null;
 }

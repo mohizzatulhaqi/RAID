@@ -3,7 +3,7 @@ import { Application, Container, Graphics, Text, TextStyle, TextureStyle } from 
 import { BossHp, Character } from '../types';
 import { createScroll } from './scroll';
 import { formatHp } from '../state/status';
-import { statusFromPresentation } from '../state/status';
+import { sceneLabel, statusFromPresentation } from '../state/status';
 import { statusLabel } from '../panels/StatusChip';
 
 interface WorldViewProps {
@@ -198,7 +198,7 @@ export const WorldView: React.FC<WorldViewProps> = ({
           { label: 'Approve', onTap: () => approveRef.current(), primary: true },
         ],
       });
-      ask.position.set(Math.round(cx - 170), Math.max(top + 120, 100 + (16 * 48) / 2 - 170));
+      ask.position.set(Math.round(cx - 170), top + 150);
       layer.addChild(ask);
     }
   }, [ready, fontsReady, bossName, bossHp, questTitle, approvalText]);
@@ -219,8 +219,10 @@ export const WorldView: React.FC<WorldViewProps> = ({
       { x: cx + 120, y: cy + 20 },
     ];
 
+    // A character with a live session walks up to the dungeon gate.
+    const gate = { x: cx, y: cy - 90 };
     characters.slice(0, slots.length).forEach((char, i) => {
-      const slot = slots[i];
+      const slot = char.active_session_id ? gate : slots[i];
       const group = new Container();
       group.position.set(slot.x, slot.y);
 
@@ -248,7 +250,7 @@ export const WorldView: React.FC<WorldViewProps> = ({
 
       // State text comes from the character's stored state, not an invented one.
       const state = new Text({
-        text: statusLabel(statusFromPresentation(char.state)),
+        text: sceneLabel(char) ?? statusLabel(statusFromPresentation(char.state)),
         style: new TextStyle({ fontFamily: 'Atkinson Hyperlegible', fontSize: 12, fill: SCENE.bone }),
       });
       state.anchor.set(0.5);

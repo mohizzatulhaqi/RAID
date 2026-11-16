@@ -101,6 +101,14 @@ export function useRaidState() {
     }
   }, []);
 
+  const refreshParty = useCallback(async () => {
+    try {
+      setCharacters(await invoke<Character[]>('get_characters'));
+    } catch (err) {
+      setNotice(`Could not load the party: ${errorText(err)}`);
+    }
+  }, []);
+
   const loadProject = useCallback(async (repoPath: string) => {
     try {
       const report = await invoke<RepoReport>('inspect_repo', { repoPath });
@@ -191,6 +199,10 @@ export function useRaidState() {
       if (ev.payload.type === 'approval_required') {
         setApproval({ action: ev.payload.data.action_description, sessionId: ev.session_id });
       }
+      // Only the character that owns this session reacts to it.
+      setCharacters((prev) =>
+        prev.map((c) => (c.active_session_id === ev.session_id ? { ...c, last_event: ev } : c)),
+      );
       if (EVIDENCE_EVENTS.has(ev.payload.type) && activeQuestId) refreshQuest(activeQuestId);
     })
       .then((fn) => {
@@ -229,7 +241,10 @@ export function useRaidState() {
     if (!activeQuestId) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    listen('task-state-changed', () => refreshQuest(activeQuestId))
+    listen('task-state-changed', () => {
+      refreshQuest(activeQuestId);
+      refreshParty();
+    })
       .then((fn) => {
         if (disposed) fn();
         else unlisten = fn;
@@ -239,7 +254,7 @@ export function useRaidState() {
       disposed = true;
       unlisten?.();
     };
-  }, [activeQuestId, refreshQuest]);
+  }, [activeQuestId, refreshQuest, refreshParty]);
 
   const createQuest = async (title: string, description: string, priority: string, bossName: string) => {
     if (!project) {
@@ -269,10 +284,11 @@ export function useRaidState() {
     }
   };
 
-  const startTask = async (taskId: string) => {
+  const startTask = async (taskId: string, characterId: string | null) => {
     try {
-      await invoke<string>('start_quest_task', { taskId });
+      await invoke<string>('start_quest_task', { taskId, characterId });
       if (activeQuestId) await refreshQuest(activeQuestId);
+      await refreshParty();
     } catch (err) {
       setNotice(`Could not start the agent session: ${errorText(err)}`);
     }

@@ -107,6 +107,7 @@ export function App() {
           canCreate={raid.project !== null}
           onSelectQuest={raid.setActiveQuest}
           onCreateQuest={raid.createQuest}
+          characters={raid.characters}
           onStartTask={raid.startTask}
           onCancelSession={raid.cancelSession}
           onMarkVerified={raid.markVerified}

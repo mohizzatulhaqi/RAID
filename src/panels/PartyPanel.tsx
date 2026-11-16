@@ -1,6 +1,7 @@
 import React from 'react';
 import { Character } from '../types';
 import { statusFromPresentation } from '../state/status';
+import { describeEvent } from '../state/eventText';
 import { StatusChip } from './StatusChip';
 
 interface PartyPanelProps {
@@ -31,8 +32,11 @@ export const PartyPanel: React.FC<PartyPanelProps> = ({ characters }) => (
         </div>
         <div className="meta">
           <span>Claude Code</span>
-          <span>No activity yet</span>
+          <span>{c.task_title ? `On: ${c.task_title}` : 'No task'}</span>
         </div>
+        <p className="mono muted party-activity">
+          {c.active_session_id && c.last_event ? describeEvent(c.last_event) : 'No activity yet'}
+        </p>
       </div>
     ))}
   </section>

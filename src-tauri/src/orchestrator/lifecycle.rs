@@ -39,6 +39,46 @@ async fn session_info(
     Ok(row.and_then(|(task, status)| SessionStatus::parse(&status).map(|s| (task, s))))
 }
 
+/// Picks who works on the task: the requested party member if free, otherwise
+/// the first free one. None when the party is empty or everyone is busy.
+async fn choose_character(
+    conn: &mut SqliteConnection,
+    task_id: &str,
+    requested: Option<&str>,
+) -> Result<Option<String>, TransitionError> {
+    let busy = "SELECT COUNT(*) FROM tasks WHERE assigned_character_id = $1 AND id != $2
+                AND status IN ('assigned', 'running', 'awaiting_approval')";
+    if let Some(id) = requested {
+        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM characters WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if exists.is_none() {
+            return Err(TransitionError::CharacterNotFound);
+        }
+        let (n,): (i64,) = sqlx::query_as(busy)
+            .bind(id)
+            .bind(task_id)
+            .fetch_one(&mut *conn)
+            .await?;
+        if n > 0 {
+            return Err(TransitionError::CharacterBusy);
+        }
+        return Ok(Some(id.to_string()));
+    }
+    let free: Option<(String,)> = sqlx::query_as(
+        "SELECT c.id FROM characters c
+         WHERE NOT EXISTS (
+             SELECT 1 FROM tasks t WHERE t.assigned_character_id = c.id AND t.id != $1
+               AND t.status IN ('assigned', 'running', 'awaiting_approval'))
+         ORDER BY c.created_at, c.rowid LIMIT 1",
+    )
+    .bind(task_id)
+    .fetch_optional(conn)
+    .await?;
+    Ok(free.map(|(id,)| id))
+}
+
 /// Moves a task to a running session: `-> Ready -> Assigned -> Running`, and
 /// records the session as `Running`. All or nothing: if any guard fails (for
 /// example the concurrency limit) nothing is written.
@@ -48,9 +88,17 @@ pub async fn begin_session(
     worktree_path: &str,
     branch_name: &str,
     model: &str,
+    character_id: Option<&str>,
 ) -> Result<String, TransitionError> {
     let ctx = TransitionContext::new("user");
     let mut tx = pool.begin().await?;
+
+    let character = choose_character(&mut tx, task_id, character_id).await?;
+    sqlx::query("UPDATE tasks SET assigned_character_id = $1 WHERE id = $2")
+        .bind(&character)
+        .bind(task_id)
+        .execute(&mut *tx)
+        .await?;
 
     if task_status(&mut tx, task_id).await? != TaskStatus::Ready {
         transition_task(&mut tx, task_id, TaskStatus::Ready, &ctx).await?;
@@ -293,13 +341,13 @@ mod tests {
     async fn begin_session_runs_the_task_and_blocks_a_double_start() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Ready).await;
-        let sid = begin_session(&pool, "t", "/w", "raid/quest-q", "m")
+        let sid = begin_session(&pool, "t", "/w", "raid/quest-q", "m", None)
             .await
             .expect("start");
         assert_eq!(task_row(&pool, "t").await.0, "running");
         assert_eq!(session_status(&pool, &sid).await, "running");
 
-        let again = begin_session(&pool, "t", "/w", "raid/quest-q", "m").await;
+        let again = begin_session(&pool, "t", "/w", "raid/quest-q", "m", None).await;
         assert!(again.is_err());
         let (n,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM agent_sessions WHERE task_id = 't'")
@@ -309,16 +357,71 @@ mod tests {
         assert_eq!(n, 1);
     }
 
+    async fn seed_character(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO characters (id, display_name, class, party_role) VALUES ($1, $1, 'mage', 'dps')",
+        )
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("character");
+    }
+
+    async fn assignee(pool: &SqlitePool, task: &str) -> Option<String> {
+        let (c,): (Option<String>,) =
+            sqlx::query_as("SELECT assigned_character_id FROM tasks WHERE id = $1")
+                .bind(task)
+                .fetch_one(pool)
+                .await
+                .expect("assignee");
+        c
+    }
+
+    #[tokio::test]
+    async fn a_free_party_member_is_assigned_and_a_busy_one_is_refused() {
+        let pool = test_pool().await;
+        seed_character(&pool, "aron").await;
+        seed_character(&pool, "lyra").await;
+        seed_task(&pool, "t1", TaskStatus::Ready).await;
+        seed_task(&pool, "t2", TaskStatus::Ready).await;
+
+        begin_session(&pool, "t1", "/w", "b", "m", Some("lyra"))
+            .await
+            .expect("start");
+        assert_eq!(assignee(&pool, "t1").await.as_deref(), Some("lyra"));
+
+        // Lyra is busy; the refusal leaves t2 untouched.
+        let busy = begin_session(&pool, "t2", "/w", "b", "m", Some("lyra")).await;
+        assert!(matches!(busy, Err(TransitionError::CharacterBusy)));
+        assert_eq!(assignee(&pool, "t2").await, None);
+        assert_eq!(task_row(&pool, "t2").await.0, "ready");
+        assert!(matches!(
+            begin_session(&pool, "t2", "/w", "b", "m", Some("nobody")).await,
+            Err(TransitionError::CharacterNotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn without_a_choice_the_first_free_member_is_picked() {
+        let pool = test_pool().await;
+        seed_character(&pool, "aron").await;
+        seed_task(&pool, "t", TaskStatus::Ready).await;
+        begin_session(&pool, "t", "/w", "b", "m", None)
+            .await
+            .expect("start");
+        assert_eq!(assignee(&pool, "t").await.as_deref(), Some("aron"));
+    }
+
     #[tokio::test]
     async fn concurrency_limit_rolls_everything_back() {
         let pool = test_pool().await;
         seed_task(&pool, "t1", TaskStatus::Ready).await;
         seed_task(&pool, "t2", TaskStatus::Ready).await;
-        begin_session(&pool, "t1", "/w", "b", "m")
+        begin_session(&pool, "t1", "/w", "b", "m", None)
             .await
             .expect("first");
 
-        let second = begin_session(&pool, "t2", "/w", "b", "m").await;
+        let second = begin_session(&pool, "t2", "/w", "b", "m", None).await;
         assert!(matches!(second, Err(TransitionError::ConcurrencyLimit(_))));
         assert_eq!(task_row(&pool, "t2").await.0, "ready");
         let (n,): (i64,) =
@@ -333,7 +436,7 @@ mod tests {
     async fn failed_and_cancelled_tasks_can_be_started_again() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Failed).await;
-        begin_session(&pool, "t", "/w", "b", "m")
+        begin_session(&pool, "t", "/w", "b", "m", None)
             .await
             .expect("retry");
         assert_eq!(task_row(&pool, "t").await.0, "running");
@@ -343,7 +446,7 @@ mod tests {
     async fn normal_exit_moves_to_verification_not_completed() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Ready).await;
-        let sid = begin_session(&pool, "t", "/w", "b", "m")
+        let sid = begin_session(&pool, "t", "/w", "b", "m", None)
             .await
             .expect("start");
         let e = exit(&sid, "t", SessionOutcome::Succeeded);
@@ -360,7 +463,7 @@ mod tests {
     async fn failed_exit_records_a_reason() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Ready).await;
-        let sid = begin_session(&pool, "t", "/w", "b", "m")
+        let sid = begin_session(&pool, "t", "/w", "b", "m", None)
             .await
             .expect("start");
         on_session_exit(&pool, &exit(&sid, "t", SessionOutcome::Failed))
@@ -375,7 +478,7 @@ mod tests {
     async fn cancelled_exit_cancels_the_task() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Ready).await;
-        let sid = begin_session(&pool, "t", "/w", "b", "m")
+        let sid = begin_session(&pool, "t", "/w", "b", "m", None)
             .await
             .expect("start");
         on_session_exit(&pool, &exit(&sid, "t", SessionOutcome::Cancelled))
@@ -389,7 +492,7 @@ mod tests {
     async fn approval_round_trip() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Ready).await;
-        let sid = begin_session(&pool, "t", "/w", "b", "m")
+        let sid = begin_session(&pool, "t", "/w", "b", "m", None)
             .await
             .expect("start");
         on_approval_requested(&pool, &sid).await.expect("requested");
@@ -408,7 +511,7 @@ mod tests {
     async fn process_ending_while_approval_is_pending_still_reaches_verification() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Ready).await;
-        let sid = begin_session(&pool, "t", "/w", "b", "m")
+        let sid = begin_session(&pool, "t", "/w", "b", "m", None)
             .await
             .expect("start");
         on_approval_requested(&pool, &sid).await.expect("requested");
@@ -424,7 +527,7 @@ mod tests {
     async fn recovery_fails_orphaned_tasks_without_changes() {
         let pool = test_pool().await;
         seed_task(&pool, "t", TaskStatus::Ready).await;
-        let sid = begin_session(&pool, "t", "/w", "b", "m")
+        let sid = begin_session(&pool, "t", "/w", "b", "m", None)
             .await
             .expect("start");
 

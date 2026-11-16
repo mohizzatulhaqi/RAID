@@ -279,7 +279,9 @@ pub async fn create_task(
 }
 
 #[tauri::command]
-pub async fn get_characters(state: State<'_, AppState>) -> Result<Vec<Character>, String> {
+pub async fn get_characters(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::orchestrator::party::PartyMember>, String> {
     let chars: Vec<Character> = sqlx::query_as("SELECT * FROM characters")
         .fetch_all(&state.db)
         .await
@@ -306,14 +308,11 @@ pub async fn get_characters(state: State<'_, AppState>) -> Result<Vec<Character>
             .execute(&state.db)
             .await;
         }
-
-        return sqlx::query_as("SELECT * FROM characters")
-            .fetch_all(&state.db)
-            .await
-            .map_err(|e| e.to_string());
     }
 
-    Ok(chars)
+    crate::orchestrator::party::party(&state.db)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 const AGENT_MODEL: &str = "claude-3-7-sonnet";
@@ -321,6 +320,7 @@ const AGENT_MODEL: &str = "claude-3-7-sonnet";
 #[tauri::command]
 pub async fn start_quest_task(
     task_id: String,
+    character_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let task: Task = sqlx::query_as("SELECT * FROM tasks WHERE id = $1")
@@ -348,6 +348,7 @@ pub async fn start_quest_task(
         &worktree_dir.to_string_lossy(),
         &format!("raid/quest-{}", task.quest_id),
         AGENT_MODEL,
+        character_id.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;

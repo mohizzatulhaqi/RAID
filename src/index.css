@@ -627,3 +627,10 @@ textarea {
   margin-top: var(--space-3);
   font-size: var(--text-md);
 }
+
+.party-activity {
+  margin-top: var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

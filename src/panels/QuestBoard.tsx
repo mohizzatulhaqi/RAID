@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BossHp, Quest, Task } from '../types';
+import { BossHp, Character, Quest, Task } from '../types';
 import { statusFromTask } from '../state/status';
 import { StatusChip } from './StatusChip';
 import { BossBar } from './BossBar';
@@ -12,7 +12,8 @@ interface QuestBoardProps {
   onSelectQuest: (quest: Quest) => void;
   canCreate: boolean;
   onCreateQuest: (title: string, description: string, priority: string, bossName: string) => void;
-  onStartTask: (taskId: string) => void;
+  characters: Character[];
+  onStartTask: (taskId: string, characterId: string | null) => void;
   onCancelSession: (sessionId: string) => void;
   onMarkVerified: (taskId: string) => void;
   selectedTaskId: string | null;
@@ -27,6 +28,7 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
   canCreate,
   onSelectQuest,
   onCreateQuest,
+  characters,
   onStartTask,
   onCancelSession,
   onMarkVerified,
@@ -38,6 +40,8 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
   const [description, setDescription] = useState('');
   const [bossName, setBossName] = useState('Build Failure Behemoth');
   const [priority, setPriority] = useState('medium');
+  const [assignee, setAssignee] = useState<string>('');
+  const freeMembers = characters.filter((c) => !c.active_session_id);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -90,15 +94,25 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
                           {task.title}
                         </button>
                         <span className="task-actions">
-                          {task.allowed_actions.includes('start') && (
-                            <button className="btn" onClick={() => onStartTask(task.id)}>
-                              Start task
-                            </button>
-                          )}
-                          {task.allowed_actions.includes('retry') && (
-                            <button className="btn" onClick={() => onStartTask(task.id)}>
-                              Retry task
-                            </button>
+                          {(task.allowed_actions.includes('start') || task.allowed_actions.includes('retry')) && (
+                            <>
+                              <select
+                                className="btn"
+                                aria-label={`Party member for ${task.title}`}
+                                value={assignee}
+                                onChange={(e) => setAssignee(e.target.value)}
+                              >
+                                <option value="">Any free member</option>
+                                {freeMembers.map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.display_name}
+                                  </option>
+                                ))}
+                              </select>
+                              <button className="btn" onClick={() => onStartTask(task.id, assignee || null)}>
+                                {task.allowed_actions.includes('retry') ? 'Retry task' : 'Start task'}
+                              </button>
+                            </>
                           )}
                           {task.allowed_actions.includes('cancel') && task.active_session_id && (
                             <button className="btn" onClick={() => onCancelSession(task.active_session_id as string)}>

@@ -66,8 +66,13 @@ export interface Character {
   level: number;
   experience: number;
   appearance_config: string;
-  state: PresentationState;
+  /** Derived by the backend from the live session, never stored by the UI. */
+  state: string;
   created_at: string;
+  task_id: string | null;
+  task_title: string | null;
+  active_session_id: string | null;
+  last_event: NormalizedEvent | null;
 }
 
 /** Mirrors the Rust `EventPayload` enum (`events/mod.rs`). */
