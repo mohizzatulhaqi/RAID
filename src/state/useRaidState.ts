@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
+import type { QuestFields } from '../panels/QuestDialog';
+import type { TaskFields } from '../panels/TaskDialog';
 import { BossHp, CheckReport, DetectedChecks, TaskDetail, WorktreeChanges, RepoIssue, RepoReport, Character, NormalizedEvent, PresentationState, Project, Quest, Task } from '../types';
 
 const MAX_EVENTS = 1000; // ring buffer: bounded memory for long sessions
@@ -256,7 +258,7 @@ export function useRaidState() {
     };
   }, [activeQuestId, refreshQuest, refreshParty]);
 
-  const createQuest = async (title: string, description: string, priority: string, bossName: string) => {
+  const createQuest = async (fields: QuestFields) => {
     if (!project) {
       setNotice('Open a project before creating a quest.');
       return;
@@ -264,23 +266,74 @@ export function useRaidState() {
     try {
       const quest = await invoke<Quest>('create_quest', {
         projectId: project.id,
-        title,
-        description,
-        priority,
-        bossName,
+        title: fields.title,
+        description: fields.description,
+        priority: fields.priority,
+        bossName: fields.bossName,
       });
-      await invoke<Task>('create_task', {
+      // Every quest starts with one task the agent can pick up.
+      await invoke<string>('create_task', {
         questId: quest.id,
-        title: `Implement: ${title}`,
-        description,
-        priority,
-        weightPercent: 70.0,
+        title: `Implement: ${fields.title}`,
+        description: fields.description,
+        priority: fields.priority,
+        parentTaskId: null,
+        dependsOn: [],
       });
       setQuests((prev) => [quest, ...prev]);
       setActiveQuest(quest);
       await refreshQuest(quest.id);
     } catch (err) {
       setNotice(`Could not create the quest: ${errorText(err)}`);
+    }
+  };
+
+  const updateQuest = async (questId: string, fields: QuestFields) => {
+    try {
+      const quest = await invoke<Quest>('update_quest', {
+        questId,
+        title: fields.title,
+        description: fields.description,
+        priority: fields.priority,
+        bossName: fields.bossName,
+      });
+      setQuests((prev) => prev.map((q) => (q.id === quest.id ? quest : q)));
+      setActiveQuest((prev) => (prev?.id === quest.id ? quest : prev));
+    } catch (err) {
+      setNotice(`Could not save the quest: ${errorText(err)}`);
+    }
+  };
+
+  const createTask = async (questId: string, fields: TaskFields) => {
+    try {
+      await invoke<string>('create_task', {
+        questId,
+        title: fields.title,
+        description: fields.description,
+        priority: fields.priority,
+        parentTaskId: fields.parentTaskId,
+        dependsOn: fields.dependsOn,
+      });
+    } catch (err) {
+      setNotice(`Could not add the task: ${errorText(err)}`);
+    } finally {
+      await refreshQuest(questId);
+    }
+  };
+
+  const updateTask = async (taskId: string, fields: TaskFields) => {
+    try {
+      await invoke('update_task', {
+        taskId,
+        title: fields.title,
+        description: fields.description,
+        priority: fields.priority,
+        dependsOn: fields.dependsOn,
+      });
+    } catch (err) {
+      setNotice(`Could not save the task: ${errorText(err)}`);
+    } finally {
+      if (activeQuestId) await refreshQuest(activeQuestId);
     }
   };
 
@@ -433,6 +486,9 @@ export function useRaidState() {
     notice,
     dismissNotice: () => setNotice(null),
     createQuest,
+    updateQuest,
+    createTask,
+    updateTask,
     startTask,
     cancelSession,
     markVerified,

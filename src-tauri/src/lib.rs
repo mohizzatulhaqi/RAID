@@ -138,6 +138,8 @@ pub fn run() {
             commands::create_quest,
             commands::get_tasks,
             commands::create_task,
+            commands::update_task,
+            commands::update_quest,
             commands::get_characters,
             commands::start_quest_task,
             commands::send_agent_input,

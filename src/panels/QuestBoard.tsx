@@ -3,6 +3,27 @@ import { BossHp, Character, Quest, Task } from '../types';
 import { statusFromTask } from '../state/status';
 import { StatusChip } from './StatusChip';
 import { BossBar } from './BossBar';
+import { QuestDialog, QuestFields } from './QuestDialog';
+import { TaskDialog, TaskFields } from './TaskDialog';
+import { PRIORITY_LABEL } from './PriorityField';
+
+const EDITABLE: Task['status'][] = ['created', 'ready', 'blocked', 'failed', 'cancelled'];
+
+/** Top-level tasks first, each followed by its subtasks. */
+function ordered(tasks: Task[]): { task: Task; depth: number }[] {
+  const ids = new Set(tasks.map((t) => t.id));
+  const out: { task: Task; depth: number }[] = [];
+  const visit = (parent: string | null, depth: number) => {
+    tasks
+      .filter((t) => (t.parent_task_id && ids.has(t.parent_task_id) ? t.parent_task_id : null) === parent)
+      .forEach((t) => {
+        out.push({ task: t, depth });
+        if (depth < 4) visit(t.id, depth + 1);
+      });
+  };
+  visit(null, 0);
+  return out;
+}
 
 interface QuestBoardProps {
   quests: Quest[];
@@ -11,7 +32,10 @@ interface QuestBoardProps {
   bossHp: BossHp | null;
   onSelectQuest: (quest: Quest) => void;
   canCreate: boolean;
-  onCreateQuest: (title: string, description: string, priority: string, bossName: string) => void;
+  onCreateQuest: (fields: QuestFields) => void;
+  onUpdateQuest: (questId: string, fields: QuestFields) => void;
+  onCreateTask: (questId: string, fields: TaskFields) => void;
+  onUpdateTask: (taskId: string, fields: TaskFields) => void;
   characters: Character[];
   onStartTask: (taskId: string, characterId: string | null) => void;
   onCancelSession: (sessionId: string) => void;
@@ -28,6 +52,9 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
   canCreate,
   onSelectQuest,
   onCreateQuest,
+  onUpdateQuest,
+  onCreateTask,
+  onUpdateTask,
   characters,
   onStartTask,
   onCancelSession,
@@ -35,22 +62,10 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
   selectedTaskId,
   onSelectTask,
 }) => {
-  const [showDialog, setShowDialog] = useState(false);
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [bossName, setBossName] = useState('Build Failure Behemoth');
-  const [priority, setPriority] = useState('medium');
+  const [questDialog, setQuestDialog] = useState<'create' | 'edit' | null>(null);
+  const [taskDialog, setTaskDialog] = useState<{ mode: 'create' } | { mode: 'edit'; task: Task } | null>(null);
   const [assignee, setAssignee] = useState<string>('');
   const freeMembers = characters.filter((c) => !c.active_session_id);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!title.trim()) return;
-    onCreateQuest(title, description, priority, bossName);
-    setTitle('');
-    setDescription('');
-    setShowDialog(false);
-  };
 
   return (
     <>
@@ -63,7 +78,7 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
       <section aria-labelledby="quests-title">
         <div className="panel-head">
           <h2 id="quests-title">Quests</h2>
-          <button className="btn btn-primary" disabled={!canCreate} onClick={() => setShowDialog(true)}>
+          <button className="btn btn-primary" disabled={!canCreate} onClick={() => setQuestDialog('create')}>
             Create quest
           </button>
         </div>
@@ -82,9 +97,20 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
                   </p>
                 </button>
                 {selected && (
+                  <div className="task-actions" style={{ margin: 'var(--space-2) 0' }}>
+                    <button className="btn" onClick={() => setQuestDialog('edit')}>
+                      Edit quest
+                    </button>
+                    <button className="btn" onClick={() => setTaskDialog({ mode: 'create' })}>
+                      Add task
+                    </button>
+                    <span className="muted">Priority {PRIORITY_LABEL[q.priority] ?? q.priority}</span>
+                  </div>
+                )}
+                {selected && (
                   <ul className="row-list" aria-label={`Tasks in ${q.title}`}>
-                    {tasks.map((task) => (
-                      <li key={task.id}>
+                    {ordered(tasks).map(({ task, depth }) => (
+                      <li key={task.id} style={{ paddingLeft: depth * 20 }}>
                         <StatusChip status={statusFromTask(task.status)} />
                         <button
                           className="quest-item"
@@ -94,6 +120,12 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
                           {task.title}
                         </button>
                         <span className="task-actions">
+                          <span className="muted">{PRIORITY_LABEL[task.priority] ?? task.priority}</span>
+                          {EDITABLE.includes(task.status) && (
+                            <button className="btn" onClick={() => setTaskDialog({ mode: 'edit', task })}>
+                              Edit
+                            </button>
+                          )}
                           {(task.allowed_actions.includes('start') || task.allowed_actions.includes('retry')) && (
                             <>
                               <select
@@ -125,7 +157,18 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
                             </button>
                           )}
                         </span>
-                        {task.failure_reason && <span className="sub">{task.failure_reason}</span>}
+                        {task.status === 'blocked' && (
+                          <span className="sub">
+                            Waiting for:{' '}
+                            {task.depends_on
+                              .filter((d) => d.status !== 'completed')
+                              .map((d) => d.title)
+                              .join(', ') || 'other tasks'}
+                          </span>
+                        )}
+                        {task.status !== 'blocked' && task.failure_reason && (
+                          <span className="sub">{task.failure_reason}</span>
+                        )}
                         {task.status === 'verification' && (
                           <span className="sub">Finished, not verified. Run checks to confirm.</span>
                         )}
@@ -139,47 +182,50 @@ export const QuestBoard: React.FC<QuestBoardProps> = ({
         )}
       </section>
 
-      {showDialog && (
-        <div className="dialog-backdrop">
-          <form className="dialog" role="dialog" aria-label="Create quest" onSubmit={handleSubmit}>
-            <h2>Create quest</h2>
-            <label className="field">
-              Title
-              <input required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Implement JWT authentication" />
-            </label>
-            <label className="field">
-              Description
-              <textarea
-                required
-                rows={3}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Describe the software goal"
-              />
-            </label>
-            <label className="field">
-              Boss name
-              <input value={bossName} onChange={(e) => setBossName(e.target.value)} />
-            </label>
-            <label className="field">
-              Priority
-              <select value={priority} onChange={(e) => setPriority(e.target.value)}>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="urgent">Urgent</option>
-              </select>
-            </label>
-            <div className="dialog-actions">
-              <button type="button" className="btn" onClick={() => setShowDialog(false)}>
-                Cancel
-              </button>
-              <button type="submit" className="btn btn-primary">
-                Create quest
-              </button>
-            </div>
-          </form>
-        </div>
+      {questDialog && (
+        <QuestDialog
+          mode={questDialog}
+          initial={
+            questDialog === 'edit' && activeQuest
+              ? {
+                  title: activeQuest.title,
+                  description: activeQuest.description,
+                  priority: activeQuest.priority,
+                  bossName: activeQuest.boss_name ?? '',
+                }
+              : { title: '', description: '', priority: 'medium', bossName: 'Build Failure Behemoth' }
+          }
+          onClose={() => setQuestDialog(null)}
+          onSubmit={(fields) => {
+            if (questDialog === 'edit' && activeQuest) onUpdateQuest(activeQuest.id, fields);
+            else onCreateQuest(fields);
+            setQuestDialog(null);
+          }}
+        />
+      )}
+
+      {taskDialog && activeQuest && (
+        <TaskDialog
+          mode={taskDialog.mode}
+          initial={
+            taskDialog.mode === 'edit'
+              ? {
+                  title: taskDialog.task.title,
+                  description: taskDialog.task.description,
+                  priority: taskDialog.task.priority,
+                  parentTaskId: taskDialog.task.parent_task_id ?? null,
+                  dependsOn: taskDialog.task.depends_on.map((d) => d.id),
+                }
+              : { title: '', description: '', priority: 'medium', parentTaskId: null, dependsOn: [] }
+          }
+          candidates={tasks.filter((t) => taskDialog.mode === 'create' || t.id !== taskDialog.task.id)}
+          onClose={() => setTaskDialog(null)}
+          onSubmit={(fields) => {
+            if (taskDialog.mode === 'edit') onUpdateTask(taskDialog.task.id, fields);
+            else onCreateTask(activeQuest.id, fields);
+            setTaskDialog(null);
+          }}
+        />
       )}
     </>
   );

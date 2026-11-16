@@ -1,5 +1,6 @@
 use crate::orchestrator::boss_hp::{BossHp, LatestVerification, compute_boss_hp};
 use crate::orchestrator::lifecycle;
+use crate::orchestrator::planning;
 use crate::orchestrator::state::{
     Evidence, TaskStatus, TransitionContext, allowed_actions, transition_task,
 };
@@ -189,6 +190,7 @@ pub struct TaskView {
     pub failure_reason: Option<String>,
     pub active_session_id: Option<String>,
     pub allowed_actions: Vec<&'static str>,
+    pub depends_on: Vec<planning::DependencyView>,
 }
 
 #[tauri::command]
@@ -223,59 +225,101 @@ pub async fn get_tasks(
         let actions = TaskStatus::parse(&task.status)
             .map(|st| allowed_actions(st, session.is_some()))
             .unwrap_or_default();
+        let mut conn = state.db.acquire().await.map_err(|e| e.to_string())?;
+        let depends_on = planning::dependencies_of(&mut conn, &task.id)
+            .await
+            .map_err(|e| e.to_string())?;
         views.push(TaskView {
             task,
             failure_reason,
             active_session_id: session.map(|(id,)| id),
             allowed_actions: actions,
+            depends_on,
         });
     }
     Ok(views)
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_task(
     quest_id: String,
     title: String,
     description: String,
     priority: String,
-    weight_percent: f64,
+    parent_task_id: Option<String>,
+    depends_on: Option<Vec<String>>,
     state: State<'_, AppState>,
-) -> Result<Task, String> {
-    let id = Uuid::new_v4().to_string();
-    let now = Utc::now();
-    let task = Task {
-        id: id.clone(),
-        quest_id,
-        parent_task_id: None,
-        title,
-        description,
-        status: "ready".to_string(),
-        assigned_character_id: None,
-        priority,
-        weight_percent,
-        created_at: now,
-        updated_at: now,
-    };
-
-    sqlx::query(
-        "INSERT INTO tasks (id, quest_id, title, description, status, priority, weight_percent, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+) -> Result<String, String> {
+    let deps = depends_on.unwrap_or_default();
+    let mut tx = state.db.begin().await.map_err(|e| e.to_string())?;
+    let id = planning::create_task(
+        &mut tx,
+        &quest_id,
+        parent_task_id.as_deref(),
+        &planning::TaskInput {
+            title: &title,
+            description: &description,
+            priority: &priority,
+            depends_on: &deps,
+        },
     )
-    .bind(&task.id)
-    .bind(&task.quest_id)
-    .bind(&task.title)
-    .bind(&task.description)
-    .bind(&task.status)
-    .bind(&task.priority)
-    .bind(task.weight_percent)
-    .bind(task.created_at)
-    .bind(task.updated_at)
-    .execute(&state.db)
     .await
     .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(id)
+}
 
-    Ok(task)
+#[tauri::command]
+pub async fn update_task(
+    task_id: String,
+    title: String,
+    description: String,
+    priority: String,
+    depends_on: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut tx = state.db.begin().await.map_err(|e| e.to_string())?;
+    planning::update_task(
+        &mut tx,
+        &task_id,
+        &planning::TaskInput {
+            title: &title,
+            description: &description,
+            priority: &priority,
+            depends_on: &depends_on,
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn update_quest(
+    quest_id: String,
+    title: String,
+    description: String,
+    priority: String,
+    boss_name: String,
+    state: State<'_, AppState>,
+) -> Result<Quest, String> {
+    let mut conn = state.db.acquire().await.map_err(|e| e.to_string())?;
+    planning::update_quest(
+        &mut conn,
+        &quest_id,
+        &title,
+        &description,
+        &priority,
+        &boss_name,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    sqlx::query_as("SELECT * FROM quests WHERE id = $1")
+        .bind(&quest_id)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -715,6 +759,10 @@ pub async fn run_checks(
         )
         .await
         .map_err(|e| e.to_string())?;
+        // A verified prerequisite can unblock the tasks waiting for it.
+        planning::sync_dependents(&mut tx, &task_id)
+            .await
+            .map_err(|e| e.to_string())?;
     } else {
         let failed: Vec<&str> = reports
             .iter()
@@ -758,6 +806,9 @@ pub async fn mark_task_verified(task_id: String, state: State<'_, AppState>) -> 
     )
     .await
     .map_err(|e| e.to_string())?;
+    planning::sync_dependents(&mut tx, &task_id)
+        .await
+        .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())
 }
 

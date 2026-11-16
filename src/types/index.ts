@@ -54,6 +54,7 @@ export interface Task {
   active_session_id: string | null;
   /** What the backend allows for this task right now. */
   allowed_actions: TaskAction[];
+  depends_on: { id: string; title: string; status: Task['status'] }[];
 }
 
 export type TaskAction = 'start' | 'retry' | 'cancel' | 'run_checks' | 'mark_verified';

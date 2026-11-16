@@ -67,7 +67,7 @@ impl TaskStatus {
             (self, to),
             (Created, Ready | Blocked | Cancelled)
                 | (Blocked, Ready | Cancelled)
-                | (Ready, Assigned | Cancelled)
+                | (Ready, Assigned | Blocked | Cancelled)
                 | (Assigned, Running | Ready | Cancelled | Failed | NeedsReview)
                 | (
                     Running,
@@ -535,6 +535,7 @@ pub(crate) mod tests {
             (Blocked, Ready),
             (Blocked, Cancelled),
             (Ready, Assigned),
+            (Ready, Blocked),
             (Ready, Cancelled),
             (Assigned, Running),
             (Assigned, Ready),

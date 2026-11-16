@@ -654,3 +654,15 @@ textarea {
   gap: var(--space-2);
   margin-left: var(--space-2);
 }
+
+.deps {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-3);
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.deps legend {
+  padding: 0 var(--space-1);
+}
