@@ -1,4 +1,5 @@
 pub mod models;
+pub mod world;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::path::Path;

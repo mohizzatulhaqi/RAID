@@ -145,6 +145,8 @@ pub fn run() {
             commands::get_quest_changes,
             commands::get_task_detail,
             commands::get_recent_events,
+            commands::get_camera,
+            commands::save_camera,
             commands::get_boss_hp,
             commands::set_project_checks,
             commands::run_checks,

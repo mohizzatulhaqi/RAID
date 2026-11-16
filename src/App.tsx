@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useRaidState } from './state/useRaidState';
 import { usePreferences, ThemeChoice } from './state/preferences';
 import { statusFromTask } from './state/status';
@@ -15,6 +16,13 @@ import { StatusChip } from './panels/StatusChip';
 export function App() {
   const raid = useRaidState();
   const prefs = usePreferences();
+  const arenaCharacterIds = useMemo(
+    () =>
+      raid.tasks
+        .filter((t) => (t.status === 'verification' || t.status === 'needs_review') && t.assigned_character_id)
+        .map((t) => t.assigned_character_id as string),
+    [raid.tasks],
+  );
   // The status shown up top is the task's own, never an animation or event state.
   const ATTENTION = ['running', 'awaiting_approval', 'verification', 'needs_review', 'failed'];
   const focusTask = raid.tasks.find((t) => ATTENTION.includes(t.status)) ?? raid.tasks[0] ?? null;
@@ -61,6 +69,8 @@ export function App() {
 
       <div className="world-host">
         <WorldView
+          projectId={raid.project?.id ?? null}
+          arenaCharacterIds={arenaCharacterIds}
           characters={raid.characters}
           bossName={raid.activeQuest?.boss_name ?? 'No active boss'}
           bossHp={raid.bossHp}

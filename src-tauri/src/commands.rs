@@ -797,3 +797,24 @@ pub async fn get_recent_events(
         .await
         .map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn get_camera(
+    project_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<crate::persistence::world::Camera>, String> {
+    crate::persistence::world::load_camera(&state.db, &project_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn save_camera(
+    project_id: String,
+    camera: crate::persistence::world::Camera,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    crate::persistence::world::save_camera(&state.db, &project_id, &camera)
+        .await
+        .map_err(|e| e.to_string())
+}
